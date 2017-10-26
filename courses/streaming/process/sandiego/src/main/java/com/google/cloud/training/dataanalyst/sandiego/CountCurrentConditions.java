@@ -29,9 +29,7 @@ import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.transforms.Count;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.ParDo;
-import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
-import org.apache.beam.sdk.transforms.windowing.FixedWindows;
-import org.apache.beam.sdk.transforms.windowing.Window;
+import org.apache.beam.sdk.transforms.windowing.*;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.joda.time.Duration;
@@ -81,6 +79,13 @@ public class CountCurrentConditions {
                 }));
 
         PCollection<KV<String, Long>> sums = currentConditions
+                .apply("ApplyWindows", Window.<LaneInfo>into(FixedWindows.of(Duration.standardMinutes(15)))
+                    .triggering(Repeatedly.forever(AfterProcessingTime
+                            .pastFirstElementInPane()
+                            .plusDelayOf(Duration.standardSeconds(60))
+                    ).orFinally(AfterWatermark.pastEndOfWindow()))
+                    .accumulatingFiredPanes()
+                    .withAllowedLateness(Duration.ZERO))
                 .apply("Create KV<Direction, LineInfo>", ParDo.of(new DoFn<LaneInfo, KV<String, LaneInfo>>() {
                     @ProcessElement
                     public void processElement(ProcessContext c) throws Exception {
@@ -88,14 +93,14 @@ public class CountCurrentConditions {
                         c.output(laneInfoPerDirection);
                     }
                 }))
-                .apply("ApplyWindows", Window.into(FixedWindows.of(Duration.standardMinutes(15))))
+
                 .apply("CountConditions", Count.perKey());
 
         sums.apply("ToBQRow", ParDo.of(new DoFn<KV<String, Long>, TableRow>() {
             @ProcessElement
             public void processElement(ProcessContext c, BoundedWindow b) throws Exception {
                 TableRow row = new TableRow();
-                row.set("windowstamp", b.maxTimestamp());
+                row.set("windowstamp", b.maxTimestamp().toString());
                 row.set("direction", c.element().getKey());
                 row.set("count", c.element().getValue());
                 c.output(row);
